@@ -55,6 +55,7 @@
   .btn.ghost{background:rgba(255,255,255,.1);color:var(--white);box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.25)}
   .btn.primary{background:linear-gradient(180deg,#f0d084,var(--gold));color:var(--navy);font-weight:800;font-size:18px}
   .btn:disabled{opacity:.4;cursor:default}
+  .btn.reset{flex:0 0 auto;padding:14px 18px}
   input[type=file]{display:none}
 
   .modal{position:fixed;inset:0;background:rgba(0,0,20,.82);display:none;align-items:center;justify-content:center;padding:16px;z-index:10;
@@ -92,6 +93,7 @@
   <button class="btn ghost" id="btnUpload">🖼️ העלאה מהמכשיר</button>
 </div>
 <div class="row">
+  <button class="btn ghost reset" id="btnReset" title="החזרת התמונה והפס למצב ההתחלתי">↺ איפוס</button>
   <button class="btn primary" id="btnSave" disabled>שמירת התמונה</button>
 </div>
 
@@ -143,6 +145,7 @@
   const maxBandX = SIZE - EDGE - CONTENT_R;
   bandX = centerBandX;
   let bandActive = false, bandSnapped = false;
+  let photoActive = false, photoSnapped = false, rawX = 0;
 
   // ---------- ציור ----------
   let raf = 0;
@@ -179,11 +182,13 @@
       c.restore();
     }
 
-    if (guides && bandActive){
+    const guideOn = bandActive || photoActive;
+    const guideSnap = (bandActive && bandSnapped) || (photoActive && photoSnapped);
+    if (guides && guideOn){
       c.save();
-      c.strokeStyle = bandSnapped ? '#d9b25a' : 'rgba(255,255,255,.45)';
-      c.lineWidth = bandSnapped ? 5 : 3;
-      if (!bandSnapped) c.setLineDash([14, 12]);
+      c.strokeStyle = guideSnap ? '#d9b25a' : 'rgba(255,255,255,.45)';
+      c.lineWidth = guideSnap ? 5 : 3;
+      if (!guideSnap) c.setLineDash([14, 12]);
       c.beginPath(); c.moveTo(SIZE/2, 0); c.lineTo(SIZE/2, SIZE); c.stroke();
       c.restore();
     }
@@ -209,6 +214,12 @@
     clampPos();
   }
 
+  // ---------- איפוס ----------
+  function resetPhoto(){ if (photo){ s = base; cx = FRAME.w / 2; cy = FRAME.h / 2; } }
+  document.getElementById('btnReset').onclick = () => {
+    resetPhoto(); bandX = centerBandX; requestDraw();
+  };
+
   // ---------- טעינת תמונה ----------
   function loadFile(file){
     if (!file) return;
@@ -224,7 +235,7 @@
       URL.revokeObjectURL(url);
       photo = c;
       base = Math.max(FRAME.w / c.width, FRAME.h / c.height);
-      s = base; cx = FRAME.w / 2; cy = FRAME.h / 2;
+      resetPhoto();
       document.getElementById('placeholder').style.display = 'none';
       document.getElementById('btnSave').disabled = false;
       requestDraw();
@@ -255,23 +266,36 @@
       bandStart = { x: p.x, bx: bandX };
       updateSnap(bandX);
     } else if (photo){
-      mode = 'photo'; last = p;
+      mode = 'photo'; last = p; rawX = cx; photoActive = true;
+      photoSnapped = Math.abs(cx - SIZE/2) < 0.5; updateBadge();
     } else mode = null;
   }
   function startPinch(){
     const [a, b] = [...pointers.values()];
     pinch = { d: Math.hypot(a.x-b.x, a.y-b.y) || 1, s0: s,
               ux: ((a.x+b.x)/2 - cx) / s, uy: ((a.y+b.y)/2 - cy) / s };
-    mode = 'pinch'; endBand();
+    mode = 'pinch'; endBand(); photoActive = true;
   }
-  function endBand(){ if (bandActive){ bandActive = false; bandSnapped = false; showBadge(false); requestDraw(); } }
+  function endBand(){ if (bandActive){ bandActive = false; bandSnapped = false; updateBadge(); requestDraw(); } }
+  function endPhoto(){ if (photoActive){ photoActive = false; photoSnapped = false; updateBadge(); requestDraw(); } }
+  function updateBadge(){ showBadge((bandActive && bandSnapped) || (photoActive && photoSnapped)); }
+  function buzz(){ if (navigator.vibrate) navigator.vibrate(15); }
 
+  // הצמדה של הפס לאמצע
   function updateSnap(x){
     const snapped = Math.abs(x - centerBandX) < SNAP;
-    if (snapped && !bandSnapped && navigator.vibrate) navigator.vibrate(15);
+    if (snapped && !bandSnapped) buzz();
     bandSnapped = snapped;
-    showBadge(snapped);
+    updateBadge();
     return snapped ? centerBandX : x;
+  }
+  // הצמדה של התמונה לאמצע (לרוחב)
+  function snapPhoto(){
+    const snapped = Math.abs(cx - SIZE/2) < SNAP;
+    if (snapped){ cx = SIZE/2; }
+    if (snapped && !photoSnapped) buzz();
+    photoSnapped = snapped;
+    updateBadge();
   }
 
   cv.addEventListener('pointerdown', e => {
@@ -289,8 +313,9 @@
     const p = toCanvas(e);
     pointers.set(e.pointerId, p);
     if (mode === 'photo' && pointers.size === 1){
-      cx += p.x - last.x; cy += p.y - last.y; last = p;
-      clampPos();
+      rawX += p.x - last.x; cy += p.y - last.y; last = p;
+      cx = rawX; clampPos(); rawX = cx;
+      snapPhoto();
     } else if (mode === 'band'){
       let x = bandStart.bx + (p.x - bandStart.x);
       x = Math.min(maxBandX, Math.max(minBandX, x));
@@ -301,7 +326,7 @@
       s = clampScale(pinch.s0 * d / pinch.d);
       cx = (a.x+b.x)/2 - pinch.ux * s;
       cy = (a.y+b.y)/2 - pinch.uy * s;
-      clampPos();
+      clampPos(); snapPhoto();
     }
     requestDraw();
   });
@@ -310,11 +335,11 @@
     if (!pointers.has(e.pointerId)) return;
     pointers.delete(e.pointerId);
     if (pointers.size === 0){
-      mode = null; endBand(); cv.classList.remove('dragging');
+      mode = null; endBand(); endPhoto(); cv.classList.remove('dragging');
     } else if (pointers.size === 1){
       // נשארה אצבע אחת – ממשיכים להזיז את התמונה ממנה
       const p = [...pointers.values()][0];
-      if (photo){ mode = 'photo'; last = p; } else mode = null;
+      if (photo){ mode = 'photo'; last = p; rawX = cx; } else mode = null;
     } else if (pointers.size >= 2 && photo) startPinch();
     requestDraw();
   }
